@@ -1,0 +1,46 @@
+server:
+  port: 8080
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+
+spring:
+  application:
+    name: evops-base
+  profiles:
+    active: dev
+  aop:
+    proxy-target-class: true
+  jackson:
+    time-zone: Asia/Shanghai
+    serialization:
+      write-dates-as-timestamps: false
+  datasource:
+    url: jdbc:h2:file:./data/evops;AUTO_SERVER=TRUE
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  h2:
+    console:
+      enabled: false
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml
+  type-aliases-package: com.evops
+  configuration:
+    map-underscore-to-camel-case: true
+
+evops:
+  sensitive:
+    # 敏感词库路径。classpath: 随包默认；生产改 file:/path/sensitive-words.txt，
+    # 文件变更自动热更新（扫描前懒检查 mtime），或 POST /api/sensitive/words/reload 立即重载
+    dict-path: classpath:sensitive-words.txt
+
+logging:
+  level:
+    com.evops: INFO

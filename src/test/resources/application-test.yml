@@ -1,0 +1,14 @@
+spring:
+  aop:
+    proxy-target-class: true
+  main:
+    allow-bean-definition-overriding: true
+  datasource:
+    url: jdbc:h2:mem:evops_test;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+
+evops:
+  sensitive:
+    # 测试词库落盘文件：SensitiveWordIntegrationTest 的 @BeforeAll 写入，用例内改写验证热更新
+    dict-path: file:./target/test-dict/sensitive-words.txt

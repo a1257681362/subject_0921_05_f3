@@ -1,0 +1,6 @@
+# EVOPS 敏感词库（示例）。格式：每行 词语 或 词语|级别。
+# 级别：BLOCK 拦截（写路径拒绝）/ MASK 打码（替换为 * 放行），缺省 MASK。# 开头为注释。
+# 词条与待检文本走同一套归一化：全角半角、大小写、分隔符插空均不影响匹配。
+# 生产建议用 evops.sensitive.dict-path 指向外部文件，改后 POST /api/sensitive/words/reload 热更新。
+测试敏感词|MASK
+违禁示例词|BLOCK
