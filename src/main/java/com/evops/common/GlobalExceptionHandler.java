@@ -41,6 +41,9 @@ public class GlobalExceptionHandler {
         if (msg.contains("UK_ORDER_REQUEST")) { // 请求号唯一（重复提交），先于单号判定
             return ApiResponse.fail(BizCode.REQUEST_DUPLICATED);
         }
+        if (msg.contains("UK_BATCH_JOB_REQUEST")) {
+            return ApiResponse.fail(BizCode.REQUEST_DUPLICATED);
+        }
         if (msg.contains("UK_ORDER_NO")) {
             return ApiResponse.fail(BizCode.ORDER_NO_DUPLICATED);
         }

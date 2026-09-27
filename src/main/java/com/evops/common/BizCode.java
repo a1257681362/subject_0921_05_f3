@@ -31,6 +31,11 @@ public enum BizCode {
 
     SENSITIVE_WORD_BLOCKED("SENSITIVE_WORD_BLOCKED", "文本包含须拦截的敏感词"),
 
+    JOB_NOT_FOUND("JOB_NOT_FOUND", "后台任务不存在"),
+    JOB_TYPE_UNSUPPORTED("JOB_TYPE_UNSUPPORTED", "不支持的任务类型"),
+    JOB_ALREADY_RUNNING("JOB_ALREADY_RUNNING", "已有同类型任务在执行或排队，请勿重复提交"),
+    JOB_STATUS_ILLEGAL("JOB_STATUS_ILLEGAL", "当前任务状态不允许该操作"),
+
     SYSTEM_ERROR("SYSTEM_ERROR", "系统处理失败");
 
     private final String code;

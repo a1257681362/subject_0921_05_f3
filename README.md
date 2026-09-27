@@ -7,7 +7,7 @@ Spring Boot 骨架项目。技术栈：Java 8、Spring Boot 2.7、MyBatis-Plus�
 1. `mvn -q -DskipTests compile` 验证构建。
 2. `mvn spring-boot:run` 启动；Spring Boot 自动执行 `src/main/resources/schema.sql`。
 3. H2 数据文件默认写入工作区 `data/evops`。
-4. `mvn test` 运行集成测试（13 个用例，内存 H2）。
+4. `mvn test` 运行集成测试（内存 H2）。
 
 `docs/schema/evops.sql` 是交付副本，与 `src/main/resources/schema.sql` 保持一致。
 
@@ -29,6 +29,8 @@ Spring Boot 骨架项目。技术栈：Java 8、Spring Boot 2.7、MyBatis-Plus�
 | `t_process_order_rx` | 左右眼处方（ACTIVE/VOID，每单每眼仅一条有效） |
 | `t_process_order_status_log` | 取镜状态流转记录（只追加） |
 | `t_sensitive_scan_log` | 加工单文本敏感词扫描留痕（只追加，PASS/MASK/BLOCK/RECHECK） |
+| `t_batch_job` | 批量后台任务主表（RECHECK 等；进度/取消/重跑；运维数据，终态 21 天后物理清理） |
+| `t_batch_job_item` | 批量任务明细（每张加工单一行，断点重跑依据；随任务 21 天清理） |
 
 ## 加工单状态
 
@@ -52,6 +54,19 @@ CREATED 已建档 ──start──▶ PROCESSING 加工中 ──finish──�
 - **扫描留痕**：每次扫描按加工单按字段写 `t_sensitive_scan_log`（含无命中的 PASS）；BLOCK 拦截尝试独立事务留痕，加工单回滚不丢。
 - **反向核对**：`/api/sensitive/recheck` 以 `t_process_order` 为准，用当前词库重扫全量加工单，与最新写路径留痕比对，输出 `neverScanned`（无留痕，如历史直插数据）与 `changed`（处置加重：现词库需要打码/拦截但留痕时不需要——多为词库变严或文本绕开守门被改），并写 RECHECK 快照留痕。给别组的扫描结果数据以此接口校验为准。
 
+## 加工单批量处理后台任务
+
+全量反向核对等批量加工单处理走后台任务，**不占请求线程**（同类型任务同时只允许一个）：
+
+- **提交即返回任务号**：`POST /api/batch/jobs`，body `{"jobType":"RECHECK","storeCode":"S01"}`（storeCode 可空=全量）；后台单线程串行执行，单据逐张独立事务（单张失败不影响其他单）。
+- **凭任务号查进度**：`GET /api/batch/jobs/{jobNo}`——`progressPct` 恒为 **5 的整数倍（0~100）**，另有 total/processed/success/failed 计数；终态 `result` 为核对报告（结构同 recheck，另含 `failedOrders` 失败单及原因）。
+- **可取消**：`POST /api/batch/jobs/{jobNo}/cancel` 为协作式取消（单据边界生效，当前单处理完即停，已处理结果保留）。
+- **可断点重跑**：`POST /api/batch/jobs/{jobNo}/rerun` 仅 FAILED/CANCELLED 可重跑；每张加工单的结果落 `t_batch_job_item`（唯一约束兜底），已 SUCCESS 的单**跳过不重扫**（不重复写 RECHECK 留痕），只补未完成/失败的单。
+- **重启恢复**：重启时 RUNNING 任务置 FAILED（明细保留可重跑），遗留 PENDING 自动重新派发。
+- **保留 21 天**：终态任务 `expire_time = 完成时间 + 21 天`，每日 03:17 定时物理清理任务及明细（`evops.batch.retain-days` / `evops.batch.cleanup-cron` 可调）。这是全库"禁止物理删除"的唯一例外——任务记录是运维临时数据，业务留痕仍只追加。
+- 同步接口 `POST /api/sensitive/recheck` 保留：应急/小批量及别组既有取数方式不受影响。
+- 周末变更窗口实施前，向验光师发放检查单：`docs/batch-job-weekend-checklist.md`。
+
 ## 接口（写接口均带三个审计请求头）
 
 镜片：
@@ -74,6 +89,12 @@ CREATED 已建档 ──start──▶ PROCESSING 加工中 ──finish──�
 - `POST /api/sensitive/scan` 试扫：`{"text":"..."}` → 命中位置（原文坐标）、打码结果、是否拦截、词库版本
 - `POST /api/sensitive/words/reload` 立即重载词库；`GET /api/sensitive/words/info` 当前词库状态
 - `POST /api/sensitive/recheck` 反向核对（body 可传 `{"storeCode":"S01"}` 收窄范围）
+
+批量后台任务（加工单批量处理）：
+
+- `POST /api/batch/jobs` 提交任务（`{"jobType":"RECHECK","storeCode":?}`，立即返回任务号）
+- `GET  /api/batch/jobs/{jobNo}` 查进度（5% 粒度）与终态报告；`GET /api/batch/jobs?status=&jobType=` 列表
+- `POST /api/batch/jobs/{jobNo}/cancel` 取消；`POST /api/batch/jobs/{jobNo}/rerun` 断点重跑
 
 示例（接口走 Shiro 认证，测试/本地可用 bootstrap/bootstrap）：
 
