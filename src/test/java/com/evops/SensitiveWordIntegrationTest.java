@@ -241,19 +241,21 @@ class SensitiveWordIntegrationTest {
                 "INSERT INTO t_process_order (order_no, customer_name, store_code, lens_id, order_status, request_no)"
                         + " VALUES ('O-SENS-RAW', '直插客户', 'S01', " + lensId + ", 'CREATED', 'RAW-S52')");
 
-        // 第一遍核对：B 未覆盖；A 无差异
-        JsonNode first = recheck();
-        List<String> neverScanned = toTextList(first.get("data").get("neverScanned"));
-        assertTrue(neverScanned.contains("O-SENS-RAW"), "直插无留痕的加工单应列入 neverScanned");
-        assertTrue(!driftOrderNos(first).contains("O-SENS-DRIFT"), "文本干净时不应报差异");
+        // 第一遍核对（后台任务）：B 未覆盖；A 无差异
+        JsonNode firstItems = runRecheckToSuccess();
+        JsonNode rawItem = itemOf(firstItems, "O-SENS-RAW");
+        JsonNode driftItem = itemOf(firstItems, "O-SENS-DRIFT");
+        assertEquals(true, rawItem.get("result").get("neverScanned").asBoolean(),
+                "直插无留痕的加工单应标记 neverScanned");
+        assertEquals(0, driftItem.get("result").get("drifts").size(), "文本干净时不应报差异");
 
         // 词库变严：新词命中 A 的存量文本 → 第二遍核对报处置加重
         try {
             writeDictQuietly(DICT_CONTENT + "核对甲|MASK\n");
             wordManager.reload();
 
-            JsonNode second = recheck();
-            JsonNode drift = driftOf(second, "O-SENS-DRIFT", "customerName");
+            JsonNode secondItems = runRecheckToSuccess();
+            JsonNode drift = driftOf(itemOf(secondItems, "O-SENS-DRIFT"), "customerName");
             assertTrue(drift != null, "词库变严后 A 的存量文本应报 drift");
             assertEquals("PASS", drift.get("recordedAction").asText());
             assertEquals("MASK", drift.get("currentAction").asText());
@@ -282,35 +284,62 @@ class SensitiveWordIntegrationTest {
         return resp.get("data");
     }
 
+    /** 提交反向核对后台任务，返回任务对象（含 taskNo） */
     private JsonNode recheck() throws Exception {
         JsonNode resp = performJson(post("/api/sensitive/recheck")
                 .header("X-Operator-Id", String.valueOf(++operatorSeq))
                 .header("X-Request-No", "S-RECHECK-" + operatorSeq));
         assertEquals("OK", resp.get("code").asText());
-        return resp;
+        return resp.get("data");
     }
 
-    private List<String> driftOrderNos(JsonNode recheckResp) {
-        List<String> orderNos = new ArrayList<>();
-        for (JsonNode drift : recheckResp.get("data").get("changed")) {
-            orderNos.add(drift.get("orderNo").asText());
+    /** 提交反向核对后台任务，轮询到 SUCCESS，返回各处理项（result 已解析为 JSON） */
+    private List<JsonNode> runRecheckToSuccess() throws Exception {
+        String taskNo = recheck().get("taskNo").asText();
+        long deadline = System.currentTimeMillis() + 20000;
+        String status;
+        do {
+            JsonNode task = performJson(get("/api/tasks/" + taskNo)).get("data");
+            status = task.get("status").asText();
+            if ("SUCCESS".equals(status) || "FAILED".equals(status) || "CANCELLED".equals(status)) {
+                assertEquals("SUCCESS", status, "反向核对任务应成功");
+                break;
+            }
+            Thread.sleep(20);
+        } while (System.currentTimeMillis() < deadline);
+
+        JsonNode itemsResp = performJson(get("/api/tasks/" + taskNo + "/items?limit=1000"));
+        List<JsonNode> parsed = new ArrayList<>();
+        for (JsonNode raw : itemsResp.get("data").get("items")) {
+            com.fasterxml.jackson.databind.node.ObjectNode wrapped =
+                    (com.fasterxml.jackson.databind.node.ObjectNode) raw;
+            String resultJson = raw.has("resultJson") && !raw.get("resultJson").isNull()
+                    ? raw.get("resultJson").asText() : "{}";
+            wrapped.set("result", objectMapper.readTree(resultJson));
+            parsed.add(wrapped);
         }
-        return orderNos;
+        return parsed;
     }
 
-    private JsonNode driftOf(JsonNode recheckResp, String orderNo, String field) {
-        for (JsonNode drift : recheckResp.get("data").get("changed")) {
-            if (orderNo.equals(drift.get("orderNo").asText()) && field.equals(drift.get("field").asText())) {
-                return drift;
+    private JsonNode itemOf(List<JsonNode> items, String orderNo) {
+        for (JsonNode item : items) {
+            if (orderNo.equals(item.get("itemRef").asText())) {
+                return item;
             }
         }
         return null;
     }
 
-    private List<String> toTextList(JsonNode array) {
-        List<String> list = new ArrayList<>();
-        array.forEach(node -> list.add(node.asText()));
-        return list;
+    private JsonNode driftOf(JsonNode item, String field) {
+        if (item == null) {
+            return null;
+        }
+        for (JsonNode drift : item.get("result").get("drifts")) {
+            if (field.equals(drift.get("field").asText())) {
+                return drift;
+            }
+        }
+        return null;
     }
 
     private long createLens(String code, String reqNo) throws Exception {

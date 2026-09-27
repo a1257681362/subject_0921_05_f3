@@ -31,6 +31,13 @@ public enum BizCode {
 
     SENSITIVE_WORD_BLOCKED("SENSITIVE_WORD_BLOCKED", "文本包含须拦截的敏感词"),
 
+    TASK_NOT_FOUND("TASK_NOT_FOUND", "任务不存在或已过保留期"),
+    TASK_TYPE_UNKNOWN("TASK_TYPE_UNKNOWN", "未知的批量任务类型"),
+    TASK_ALREADY_RUNNING("TASK_ALREADY_RUNNING", "任务正在执行，请勿重复提交"),
+    TASK_NOT_CANCELLABLE("TASK_NOT_CANCELLABLE", "当前任务状态不可取消"),
+    TASK_NOT_RUNNABLE("TASK_NOT_RUNNABLE", "当前任务状态不可重跑"),
+    TASK_NO_PENDING_ITEMS("TASK_NO_PENDING_ITEMS", "任务没有可继续处理的项"),
+
     SYSTEM_ERROR("SYSTEM_ERROR", "系统处理失败");
 
     private final String code;

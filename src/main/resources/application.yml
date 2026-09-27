@@ -40,6 +40,12 @@ evops:
     # 敏感词库路径。classpath: 随包默认；生产改 file:/path/sensitive-words.txt，
     # 文件变更自动热更新（扫描前懒检查 mtime），或 POST /api/sensitive/words/reload 立即重载
     dict-path: classpath:sensitive-words.txt
+  batch:
+    # 后台批量任务：独立线程池执行，不堵请求线程
+    core-size: 2            # 并发执行的任务数（单任务内部逐项串行）
+    keep-days: 21           # 终态任务记录保留天数，超期转 ARCHIVED（不物理删除）
+    cleanup-cron: "0 30 2 * * ?"  # 归档清理：每天 02:30
+    item-chunk: 100         # 每批捞取/取消检查的项数
 
 logging:
   level:

@@ -7,9 +7,9 @@ Spring Boot 骨架项目。技术栈：Java 8、Spring Boot 2.7、MyBatis-Plus�
 1. `mvn -q -DskipTests compile` 验证构建。
 2. `mvn spring-boot:run` 启动；Spring Boot 自动执行 `src/main/resources/schema.sql`。
 3. H2 数据文件默认写入工作区 `data/evops`。
-4. `mvn test` 运行集成测试（13 个用例，内存 H2）。
+4. `mvn test` 运行集成测试（内存 H2）。
 
-`docs/schema/evops.sql` 是交付副本，与 `src/main/resources/schema.sql` 保持一致。
+`docs/schema/evops.sql` 是交付副本，与 `src/main/resources/schema.sql` 保持一致。周末变更检查单见 `docs/ops/周末变更-加工单批量后台任务-检查单.md`。
 
 ## 统一约定
 
@@ -29,6 +29,8 @@ Spring Boot 骨架项目。技术栈：Java 8、Spring Boot 2.7、MyBatis-Plus�
 | `t_process_order_rx` | 左右眼处方（ACTIVE/VOID，每单每眼仅一条有效） |
 | `t_process_order_status_log` | 取镜状态流转记录（只追加） |
 | `t_sensitive_scan_log` | 加工单文本敏感词扫描留痕（只追加，PASS/MASK/BLOCK/RECHECK） |
+| `t_batch_task` | 后台批量任务（任务号查进度、状态机、计数、保留期归档） |
+| `t_batch_task_item` | 批量任务处理项（每加工单一项，断点续跑/失败重试依据） |
 
 ## 加工单状态
 
@@ -50,7 +52,18 @@ CREATED 已建档 ──start──▶ PROCESSING 加工中 ──finish──�
 - **命中位置返回前端**：`/api/sensitive/scan` 返回原文坐标 `[start, end)`（end 开区间），前端提交前据此标记。
 - **词库热更新**：`evops.sensitive.dict-path` 指向 `file:` 外部文件时，文件变更自动生效（扫描前懒检查 mtime）；任何路径都可调 `/api/sensitive/words/reload` 立即重载。词库版本为内容 MD5 短串，随每次扫描留痕。
 - **扫描留痕**：每次扫描按加工单按字段写 `t_sensitive_scan_log`（含无命中的 PASS）；BLOCK 拦截尝试独立事务留痕，加工单回滚不丢。
-- **反向核对**：`/api/sensitive/recheck` 以 `t_process_order` 为准，用当前词库重扫全量加工单，与最新写路径留痕比对，输出 `neverScanned`（无留痕，如历史直插数据）与 `changed`（处置加重：现词库需要打码/拦截但留痕时不需要——多为词库变严或文本绕开守门被改），并写 RECHECK 快照留痕。给别组的扫描结果数据以此接口校验为准。
+- **反向核对（后台批量任务）**：`/api/sensitive/recheck` 提交后**立即返回任务号**，在独立线程池逐单重扫（不堵请求线程），不再整任务一个大事务。逐单独立事务、失败只回滚该单；用任务号在 `/api/tasks/{taskNo}` 查进度（5% 一档）、取消、断点重跑。每单每字段仍写 RECHECK 快照留痕；`neverScanned`（无写路径留痕，如历史直插数据）与 `changed`（处置加重：现词库需打码/拦截但留痕时不需要——多为词库变严或文本绕开守门被改）落在任务项 `resultJson`，任务级 `resultJson` 给汇总。给别组的扫描结果数据以该任务结果为准。
+
+## 后台批量任务
+
+大批量处理一律走后台任务，不占请求线程。框架通用，一种任务类型一个 `BatchTaskHandler` 实现（目前为敏感词反向核对 `SENSITIVE_RECHECK`）。
+
+- **任务号查进度**：提交即得 `taskNo`（`BT-日期-序号`）；`progressPct` 按已处理占比量化到 **5% 一档**（0,5,…,100），计数（总数/已处理/成功/失败）随处理落库。
+- **状态机**：`PENDING → RUNNING → SUCCESS / FAILED`；执行中可 `CANCEL_REQUESTED → CANCELLED`（当前项收尾即停，已处理项保留）。
+- **可取消可重跑**：取消在当前处理项后生效；`rerun` 只续跑 `PENDING/FAILED` 项，已成功项跳过（`attempt` 不重复累加）——失败可断点重跑。
+- **逐项独立事务**：每单 `REQUIRES_NEW`，一项失败只回滚该项并记 `FAILED + errorMessage`，不影响整体。
+- **崩溃恢复**：进程重启后 `ApplicationReadyEvent` 把残留 `RUNNING` 复位续跑、残留取消请求结算，按 item 断点继续。
+- **记录保留 21 天**：每天 02:30 把终态超 `evops.batch.keep-days`（默认 21）的任务置 `ARCHIVED`（只改状态位，**不物理删除**），默认列表不展示，`includeArchived=true` 可查。
 
 ## 接口（写接口均带三个审计请求头）
 
@@ -73,7 +86,15 @@ CREATED 已建档 ──start──▶ PROCESSING 加工中 ──finish──�
 
 - `POST /api/sensitive/scan` 试扫：`{"text":"..."}` → 命中位置（原文坐标）、打码结果、是否拦截、词库版本
 - `POST /api/sensitive/words/reload` 立即重载词库；`GET /api/sensitive/words/info` 当前词库状态
-- `POST /api/sensitive/recheck` 反向核对（body 可传 `{"storeCode":"S01"}` 收窄范围）
+- `POST /api/sensitive/recheck` 提交反向核对**后台任务**（body 可传 `{"storeCode":"S01"}` 收窄范围），立即返回任务号
+
+后台批量任务：
+
+- `POST /api/tasks` 通用建任务：`{"taskType":"SENSITIVE_RECHECK","params":{"storeCode":"S01"}}` → 立即返回任务
+- `GET  /api/tasks/{taskNo}` 按任务号查进度（`status/progressPct/各计数/resultJson`）
+- `GET  /api/tasks?taskType=&status=&includeArchived=false` 任务列表（最近 200 条，默认不含已归档）
+- `POST /api/tasks/{taskNo}/cancel` 请求取消；`POST /api/tasks/{taskNo}/rerun` 断点重跑
+- `GET  /api/tasks/{taskNo}/items?status=&limit=200` 处理项明细（每单状态、`attempt`、`errorMessage`、`resultJson`）
 
 示例（接口走 Shiro 认证，测试/本地可用 bootstrap/bootstrap）：
 
